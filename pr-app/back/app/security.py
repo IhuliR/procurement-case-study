@@ -4,9 +4,10 @@ This is deliberately simple: no JWT, no refresh, cookie token persisted in the
 DB. Good for a case study, bad for production."""
 from __future__ import annotations
 
+import os
 import secrets
 
-from fastapi import Cookie, Depends, HTTPException, Response, status
+from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,8 @@ from .models import User
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 COOKIE_NAME = "pr_token"
+
+INTEGRATION_KEY_HEADER = "X-Integration-Key"
 
 
 def hash_password(plain: str) -> str:
@@ -71,3 +74,22 @@ def require_role(*allowed: str):
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"Requires role: {', '.join(allowed)}")
         return user
     return _inner
+
+
+def require_pr_integration_key(
+    integration_key: str | None = Header(
+        default=None,
+        alias=INTEGRATION_KEY_HEADER,
+    ),
+) -> None:
+    configured_key = os.environ.get("PR_INTEGRATION_API_KEY")
+
+    if (
+        not configured_key
+        or not integration_key
+        or not secrets.compare_digest(integration_key, configured_key)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid integration key"
+        )
