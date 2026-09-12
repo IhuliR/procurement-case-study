@@ -96,6 +96,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: casestudy
+      PR_API_BASE_URL: http://pr-app-back:8001
+      PR_INTEGRATION_API_KEY: ${PR_INTEGRATION_API_KEY:-dev-pr-integration-key}
     ports:
       - "8002:8002"
 
