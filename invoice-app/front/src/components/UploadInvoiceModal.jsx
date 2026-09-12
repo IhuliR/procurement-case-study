@@ -6,11 +6,17 @@ import {
   Modal,
   NumberInput,
   SegmentedControl,
+  Select,
   Stack,
   Text,
   TextInput,
 } from '@mantine/core';
 import { api } from '../api.js';
+import {
+  invoiceMutationError,
+  purchaseRequestSelectData,
+  usePurchaseRequestOptions,
+} from '../purchaseRequests.js';
 
 const EMPTY = {
   invoice_number: '',
@@ -27,6 +33,11 @@ export default function UploadInvoiceModal({ opened, onClose, onCreated }) {
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const resetRef = useRef(null);
+  const {
+    options: purchaseRequestOptions,
+    status: purchaseRequestStatus,
+    reload: reloadPurchaseRequests,
+  } = usePurchaseRequestOptions(opened);
 
   // Read value synchronously before scheduling the state update — React 19
   // + StrictMode invokes functional updaters twice and `e.currentTarget`
@@ -46,16 +57,32 @@ export default function UploadInvoiceModal({ opened, onClose, onCreated }) {
     onClose();
   };
 
+  const selectPurchaseRequest = (requestCode) => {
+    const option = purchaseRequestOptions.find(({ request_code }) => request_code === requestCode);
+    setForm((current) => ({
+      ...current,
+      purchase_request_number: option?.request_code || '',
+      supplier: option?.supplier_name || '',
+    }));
+    setError(null);
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     setError(null);
+    const selectedPurchaseRequest = purchaseRequestOptions.find(
+      ({ request_code }) => request_code === form.purchase_request_number
+    );
+    if (!selectedPurchaseRequest) {
+      setError('Select an approved purchase request.');
+      return;
+    }
     setSubmitting(true);
     try {
       const fd = new FormData();
       fd.append('invoice_number', form.invoice_number);
-      fd.append('supplier', form.supplier);
-      if (form.purchase_request_number)
-        fd.append('purchase_request_number', form.purchase_request_number);
+      fd.append('supplier', selectedPurchaseRequest.supplier_name);
+      fd.append('purchase_request_number', selectedPurchaseRequest.request_code);
       fd.append('invoice_sum', form.invoice_sum);
       if (form.invoice_sum_paid !== '' && form.invoice_sum_paid != null)
         fd.append('invoice_sum_paid', form.invoice_sum_paid);
@@ -66,7 +93,15 @@ export default function UploadInvoiceModal({ opened, onClose, onCreated }) {
       onCreated?.();
       close();
     } catch (err) {
-      setError(err?.response?.data?.message || 'Could not upload invoice');
+      setError(invoiceMutationError(err, 'Could not upload invoice'));
+      if (err?.response?.status === 404 || err?.response?.status === 409) {
+        setForm((current) => ({
+          ...current,
+          purchase_request_number: '',
+          supplier: '',
+        }));
+        await reloadPurchaseRequests();
+      }
     } finally {
       setSubmitting(false);
     }
@@ -120,18 +155,36 @@ export default function UploadInvoiceModal({ opened, onClose, onCreated }) {
           <Group grow align="flex-start">
             <TextInput
               label="Supplier"
-              placeholder="Apple Store B2B"
+              placeholder="Set by purchase request"
               required
               value={form.supplier}
-              onChange={setField('supplier')}
+              readOnly
             />
-            <TextInput
-              label="Purchase request #"
-              placeholder="PR-2"
+            <Select
+              label="Purchase request"
+              placeholder={purchaseRequestStatus === 'loading'
+                ? 'Loading approved requests…'
+                : 'Select an approved request'}
+              required
+              searchable
+              data={purchaseRequestSelectData(purchaseRequestOptions)}
               value={form.purchase_request_number}
-              onChange={setField('purchase_request_number')}
+              onChange={selectPurchaseRequest}
+              disabled={purchaseRequestStatus !== 'success' || submitting}
+              nothingFoundMessage="No approved purchase requests"
             />
           </Group>
+          {purchaseRequestStatus === 'loading' && (
+            <Text c="dimmed" size="sm">Loading approved purchase requests…</Text>
+          )}
+          {purchaseRequestStatus === 'success' && purchaseRequestOptions.length === 0 && (
+            <Text c="dimmed" size="sm">No approved purchase requests are available.</Text>
+          )}
+          {purchaseRequestStatus === 'error' && (
+            <Text c="red" size="sm">
+              Purchase requests are temporarily unavailable. Please try again later.
+            </Text>
+          )}
           <Group grow align="flex-start">
             <NumberInput
               label="Invoice sum"
@@ -170,7 +223,14 @@ export default function UploadInvoiceModal({ opened, onClose, onCreated }) {
             <Button variant="default" onClick={close} disabled={submitting}>
               Cancel
             </Button>
-            <Button type="submit" loading={submitting}>
+            <Button
+              type="submit"
+              loading={submitting}
+              disabled={purchaseRequestStatus !== 'success'
+                || purchaseRequestOptions.length === 0
+                || !form.purchase_request_number
+                || submitting}
+            >
               Upload invoice
             </Button>
           </Group>
