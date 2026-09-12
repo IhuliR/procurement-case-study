@@ -7,7 +7,8 @@ public class PurchaseRequestIntegrationException extends RuntimeException {
         NOT_APPROVED,
         UNAVAILABLE,
         INTEGRATION_ERROR,
-        NOT_CONFIGURED
+        NOT_CONFIGURED,
+        REQUIRED
     }
 
     private final Type type;
@@ -48,5 +49,9 @@ public class PurchaseRequestIntegrationException extends RuntimeException {
                 Type.NOT_CONFIGURED,
                 "Purchase request integration is not configured"
         );
+    }
+
+    static PurchaseRequestIntegrationException required() {
+        return new PurchaseRequestIntegrationException(Type.REQUIRED, "Purchase request is required");
     }
 }
