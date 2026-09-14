@@ -3,6 +3,10 @@ package com.casestudy.invoiceapp.invoice;
 import com.casestudy.invoiceapp.auth.CurrentUserFilter;
 import com.casestudy.invoiceapp.invoice.dto.InvoiceSummaryDto;
 import com.casestudy.invoiceapp.invoice.dto.InvoiceUpdateDto;
+import com.casestudy.invoiceapp.purchaserequest.PurchaseRequestClient;
+import com.casestudy.invoiceapp.purchaserequest.PurchaseRequestOption;
+import com.casestudy.invoiceapp.purchaserequest.PurchaseRequestRelationshipService;
+import com.casestudy.invoiceapp.purchaserequest.PurchaseRequestRelationshipService.ValidatedRelationship;
 import com.casestudy.invoiceapp.user.User;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
@@ -16,6 +20,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 @RestController
@@ -25,15 +30,27 @@ public class InvoiceController {
     private static final Set<String> VALID_STATUSES = Set.of("created", "prepaid", "paid");
 
     private final InvoiceRepository invoices;
+    private final PurchaseRequestRelationshipService purchaseRequestRelationships;
+    private final PurchaseRequestClient purchaseRequestClient;
 
-    public InvoiceController(InvoiceRepository invoices) {
+    public InvoiceController(InvoiceRepository invoices,
+                             PurchaseRequestRelationshipService purchaseRequestRelationships,
+                             PurchaseRequestClient purchaseRequestClient) {
         this.invoices = invoices;
+        this.purchaseRequestRelationships = purchaseRequestRelationships;
+        this.purchaseRequestClient = purchaseRequestClient;
     }
 
     @GetMapping
     public List<InvoiceSummaryDto> list(HttpServletRequest req) {
         requireFinance(req);
         return invoices.findAllSummaries();
+    }
+
+    @GetMapping("/purchase-request-options")
+    public List<PurchaseRequestOption> purchaseRequestOptions(HttpServletRequest req) {
+        requireFinance(req);
+        return purchaseRequestClient.getInvoiceOptions();
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -49,11 +66,12 @@ public class InvoiceController {
     ) throws IOException {
         User user = requireFinance(req);
         requireValidStatus(invoiceStatus);
+        ValidatedRelationship relationship =
+                purchaseRequestRelationships.validateForCreate(purchaseRequestNumber);
 
         Invoice inv = new Invoice();
         inv.setInvoiceNumber(invoiceNumber);
-        inv.setSupplier(supplier);
-        inv.setPurchaseRequestNumber(purchaseRequestNumber);
+        applyRelationship(inv, relationship);
         inv.setInvoiceSum(invoiceSum);
         inv.setInvoiceSumPaid(invoiceSumPaid == null ? BigDecimal.ZERO : invoiceSumPaid);
         inv.setInvoiceStatus(invoiceStatus);
@@ -74,10 +92,15 @@ public class InvoiceController {
         requireFinance(req);
         Invoice inv = invoices.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Invoice not found"));
+        Optional<ValidatedRelationship> relationship =
+                purchaseRequestRelationships.validateForUpdate(inv, body.purchaseRequestNumber);
 
         if (body.invoiceNumber != null)         inv.setInvoiceNumber(body.invoiceNumber);
-        if (body.supplier != null)              inv.setSupplier(body.supplier);
-        if (body.purchaseRequestNumber != null) inv.setPurchaseRequestNumber(body.purchaseRequestNumber);
+        if (relationship.isPresent()) {
+            applyRelationship(inv, relationship.orElseThrow());
+        } else if (inv.getPurchaseRequestNumber() == null && body.supplier != null) {
+            inv.setSupplier(body.supplier);
+        }
         if (body.invoiceSum != null)            inv.setInvoiceSum(body.invoiceSum);
         if (body.invoiceSumPaid != null)        inv.setInvoiceSumPaid(body.invoiceSumPaid);
         if (body.invoiceStatus != null) {
@@ -124,6 +147,12 @@ public class InvoiceController {
                     "Invalid status — expected one of: created, prepaid, paid"
             );
         }
+    }
+
+    private static void applyRelationship(Invoice invoice, ValidatedRelationship relationship) {
+        invoice.setPurchaseRequestNumber(relationship.requestCode());
+        invoice.setSupplier(relationship.supplierName());
+        invoice.setPurchaseRequestValidatedAt(relationship.validatedAt());
     }
 
     private static InvoiceSummaryDto toSummary(Invoice i) {

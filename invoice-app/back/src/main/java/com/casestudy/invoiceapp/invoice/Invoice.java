@@ -26,6 +26,9 @@ public class Invoice {
     @Column(name = "purchase_request_number")
     private String purchaseRequestNumber;
 
+    @Column(name = "purchase_request_validated_at")
+    private Instant purchaseRequestValidatedAt;
+
     @Column(name = "invoice_sum", precision = 14, scale = 2, nullable = false)
     private BigDecimal invoiceSum = BigDecimal.ZERO;
 
@@ -75,6 +78,9 @@ public class Invoice {
 
     public String getPurchaseRequestNumber() { return purchaseRequestNumber; }
     public void setPurchaseRequestNumber(String purchaseRequestNumber) { this.purchaseRequestNumber = purchaseRequestNumber; }
+
+    public Instant getPurchaseRequestValidatedAt() { return purchaseRequestValidatedAt; }
+    public void setPurchaseRequestValidatedAt(Instant purchaseRequestValidatedAt) { this.purchaseRequestValidatedAt = purchaseRequestValidatedAt; }
 
     public BigDecimal getInvoiceSum() { return invoiceSum; }
     public void setInvoiceSum(BigDecimal invoiceSum) { this.invoiceSum = invoiceSum; }

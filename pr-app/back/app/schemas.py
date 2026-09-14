@@ -63,3 +63,18 @@ class PurchaseRequestOut(BaseModel):
     request_approval_status: PRStatus
     created_at: datetime
     updated_at: datetime
+
+
+class PurchaseRequestInvoiceOption(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    request_code: str
+    request_name: str
+    supplier_name: str
+
+
+class PurchaseRequestInvoiceContext(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    request_code: str
+    supplier_name: str

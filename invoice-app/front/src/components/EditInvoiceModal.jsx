@@ -6,11 +6,17 @@ import {
   Modal,
   NumberInput,
   SegmentedControl,
+  Select,
   Stack,
   Text,
   TextInput,
 } from '@mantine/core';
 import { api } from '../api.js';
+import {
+  invoiceMutationError,
+  purchaseRequestSelectData,
+  usePurchaseRequestOptions,
+} from '../purchaseRequests.js';
 import StatusBadge from './StatusBadge.jsx';
 
 const fields = ['invoice_number', 'supplier', 'purchase_request_number', 'invoice_sum', 'invoice_sum_paid', 'invoice_status'];
@@ -19,6 +25,21 @@ export default function EditInvoiceModal({ invoice, onClose, onUpdated }) {
   const [form, setForm] = useState(null);
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
+  const {
+    options: purchaseRequestOptions,
+    status: purchaseRequestStatus,
+  } = usePurchaseRequestOptions(!!invoice);
+
+  const purchaseRequestData = purchaseRequestSelectData(purchaseRequestOptions);
+  if (form?.purchase_request_number
+      && !purchaseRequestOptions.some(
+        ({ request_code }) => request_code === form.purchase_request_number
+      )) {
+    purchaseRequestData.unshift({
+      value: form.purchase_request_number,
+      label: `${form.purchase_request_number} — current linked request`,
+    });
+  }
 
   // Re-seed the form whenever the parent passes a new invoice in.
   useEffect(() => {
@@ -42,6 +63,17 @@ export default function EditInvoiceModal({ invoice, onClose, onUpdated }) {
     setForm((f) => ({ ...f, [k]: value }));
   };
 
+  const selectPurchaseRequest = (requestCode) => {
+    const option = purchaseRequestOptions.find(({ request_code }) => request_code === requestCode);
+    if (!option) return;
+    setForm((current) => ({
+      ...current,
+      purchase_request_number: option.request_code,
+      supplier: option.supplier_name,
+    }));
+    setError(null);
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     setError(null);
@@ -58,7 +90,7 @@ export default function EditInvoiceModal({ invoice, onClose, onUpdated }) {
       onUpdated?.();
       onClose();
     } catch (err) {
-      setError(err?.response?.data?.message || 'Could not save changes');
+      setError(invoiceMutationError(err, 'Could not save changes'));
     } finally {
       setSaving(false);
     }
@@ -118,13 +150,23 @@ export default function EditInvoiceModal({ invoice, onClose, onUpdated }) {
               label="Supplier"
               value={form.supplier}
               onChange={setField('supplier')}
+              readOnly={Boolean(form.purchase_request_number)}
             />
           </Group>
           <Group grow align="flex-start">
-            <TextInput
-              label="Purchase request #"
+            <Select
+              label="Purchase request"
               value={form.purchase_request_number}
-              onChange={setField('purchase_request_number')}
+              placeholder={purchaseRequestStatus === 'loading'
+                ? 'Loading approved requests…'
+                : 'Select an approved request'}
+              searchable
+              data={purchaseRequestData}
+              onChange={selectPurchaseRequest}
+              disabled={saving
+                || purchaseRequestStatus !== 'success'
+                || purchaseRequestOptions.length === 0}
+              nothingFoundMessage="No approved purchase requests"
             />
             <NumberInput
               label="Invoice sum"
@@ -144,6 +186,20 @@ export default function EditInvoiceModal({ invoice, onClose, onUpdated }) {
             />
           </Group>
 
+          {purchaseRequestStatus === 'loading' && (
+            <Text c="dimmed" size="sm">Loading approved purchase requests…</Text>
+          )}
+          {purchaseRequestStatus === 'success' && purchaseRequestOptions.length === 0 && (
+            <Text c="dimmed" size="sm">
+              No approved purchase requests are available. The current link is unchanged.
+            </Text>
+          )}
+          {purchaseRequestStatus === 'error' && (
+            <Text c="red" size="sm">
+              Purchase requests could not be loaded. The current link is unchanged.
+            </Text>
+          )}
+
           <Stack gap={6}>
             <Text size="sm" fw={500} c="dark.7">Status</Text>
             <SegmentedControl
@@ -154,10 +210,6 @@ export default function EditInvoiceModal({ invoice, onClose, onUpdated }) {
             />
           </Stack>
 
-          {/* Linked PR card — purely informational. There is no live lookup
-              against the PR backend; the PR number is a free-text string.
-              That's one of the things this case study asks candidates to
-              think about. */}
           {form.purchase_request_number && (
             <Stack
               bg="rgba(34, 139, 230, 0.1)"
@@ -168,8 +220,7 @@ export default function EditInvoiceModal({ invoice, onClose, onUpdated }) {
               <Text size="xs" fw={600} c="dark.7">Linked purchase request</Text>
               <Text size="sm" c="dark.7">{form.purchase_request_number}</Text>
               <Text size="xs" c="dimmed">
-                Stored as free-text — there is no foreign key into the PR app's
-                purchase_requests table. The two systems do not cross-check.
+                Supplier is managed by the selected purchase request.
               </Text>
             </Stack>
           )}
