@@ -2,309 +2,330 @@
 
 ## Problem interpretation
 
-The Purchase Request (PR) and Invoice applications support two stages of the
-same purchasing process, but they do not exchange business data. An employee
-creates a purchase request in the PR application and finance reviews it. When a
-supplier invoice arrives, finance registers it in a separate application and
-manually copies the PR number and supplier details from emails and documents.
+The Purchase Request (PR) and Invoice applications support different stages of
+the same purchasing process, but initially they did not exchange business data.
+After a PR was approved, finance manually copied its code and supplier into the
+Invoice App when registering a supplier invoice. The Invoice App did not verify
+that the PR existed, that it was approved, or that the supplier matched.
 
-The systems do not verify this relationship. An invoice can refer to a missing
-or unapproved request, or contain a different supplier. A user looking at a PR
-cannot see its invoices or payment status, so finance has to reconcile the two
-systems in spreadsheets.
-
-The prototype will remove this manual copying and make the relationship visible
-in both workflows. It will keep the applications and their data ownership
-separate rather than combine them into one service.
+A user viewing a PR could not see its related Invoices or payment status.
+Finance therefore reconciled the two applications manually through documents,
+email, and spreadsheets. The prototype's goal was to create a verifiable
+relationship between a PR and its Invoices while preserving the applications
+as separate services with distinct responsibilities.
 
 ## Current constraints
 
-The following are facts observed in the existing repository:
+The following describes the repository at the start of the integration work:
 
-- The PR backend uses FastAPI and SQLAlchemy. The Invoice backend uses Spring
-  Boot and JPA.
-- Both applications currently use the same PostgreSQL database, but they do not
-  integrate through their domain models. Sharing a database is not treated as
-  an integration contract.
-- Schema ownership is unclear: the PR application creates tables through
-  SQLAlchemy, while the Invoice application uses Hibernate `ddl-auto: update`.
-- The Invoice application stores `purchase_request_number` and `supplier` as
-  free text. It does not check that the PR exists or is approved.
-- Each application has its own session and cookie. Logging in to one does not
-  authenticate a user in the other.
-- A PR has no requested amount, so the system cannot compare requested,
-  invoiced, and paid amounts.
-- Automated test coverage is sparse, and there is no CI configuration.
+- the PR backend used FastAPI and SQLAlchemy, while the Invoice backend used
+  Spring Boot and JPA;
+- both applications used one PostgreSQL instance, but a shared database was not
+  itself a business integration contract;
+- schema ownership was insufficiently strict: SQLAlchemy created the PR App
+  tables and Hibernate used `ddl-auto: update`;
+- user sessions were independent between the applications;
+- `purchase_request_number` and supplier in the Invoice App were free-text
+  fields;
+- PRs had no structured requested amount or currency; adding them was a
+  possible product extension, not an established requirement for the
+  prototype;
+- automated tests were sparse and CI was absent;
+- the integration was required to avoid additional coupling through direct
+queries to the neighbouring application's tables.
 
-The prototype makes these assumptions:
+## Implemented prototype
 
-- A PR code is unique and does not change after creation.
-- Only an approved PR can have an invoice.
-- An approved PR cannot be edited or moved back to an earlier state in the
-  current workflow.
-- One PR can have multiple invoices, for example a prepayment invoice and a
-  final invoice.
-- It is acceptable to stop invoice creation briefly when the PR application is
-  unavailable. Higher availability is discussed in the roadmap.
-
----
-
-## Proposed design
-
-The applications will communicate through synchronous backend-to-backend HTTP
-requests. Neither backend will read the other application's tables directly.
+The Purchase Request (PR) and Invoice applications remain separate services
+and exchange business data through synchronous backend-to-backend HTTP calls.
+Neither service queries the other service's tables, even though the prototype
+still runs both applications on one PostgreSQL instance.
 
 ```mermaid
 flowchart LR
     PF["PR frontend"] --> PB["PR backend"]
     IF["Invoice frontend"] --> IB["Invoice backend"]
-    IB -->|"approved PRs and validation"| PB
-    PB -->|"invoices for a PR"| IB
+    IB -->|"approved PR options and validation"| PB
+    PB -->|"validated invoices for a PR"| IB
 ```
 
-In the Invoice application, finance will select an approved PR from a list
-instead of typing its code and supplier manually. The Invoice backend will get
-the list from the PR backend. On form submission, it will validate the selected
-PR again before saving the invoice. The second check is required because client
-input is not trusted and the earlier list may be stale.
+The integration supports two user flows:
 
-In the PR application, the PR details view will include a separate list of
-linked invoices. The PR backend will request that list from the Invoice backend
-when it is needed. Invoice data will not be copied into the PR database.
+- finance selects and validates an approved PR while creating an Invoice;
+- a user viewing a PR can see all Invoices linked through a validated
+  relationship.
 
-The two existing frontends will remain separate in the prototype. A unified
-interface and single sign-on are product improvements rather than requirements
-for the core integration.
+The frontends call only their own backends. Integration credentials and
+cross-service calls remain on the server side.
 
-## Domain model and ownership
+## Ownership and data representation
 
-The PR application remains the source of truth for:
+The PR App is the source of truth for the PR code, request details, approval
+status, and supplier recorded on the request. The Invoice App owns Invoice
+data, attachments, payment status, and the relationship from an Invoice to a
+PR.
 
-- PR code, name, author, and description;
-- supplier name and email on the request;
-- approval status and allowed approval transitions.
+When that relationship is validated, the Invoice App stores:
 
-The Invoice application remains the source of truth for:
+- the confirmed PR code in `purchase_request_number`;
+- the supplier returned by the PR App as a snapshot;
+- the validation time in `purchase_request_validated_at`.
 
-- invoice number and attachment;
-- invoice total and amount paid;
-- invoice payment status;
-- the relationship from an invoice to a PR.
+The snapshot records what the PR App returned when the link was confirmed. It
+is not updated automatically and can therefore differ from the current PR
+supplier later. One PR can have multiple Invoices.
 
-An invoice will store the validated PR code and a snapshot of the supplier name
-returned by the PR application. The snapshot records the supplier known when
-the invoice was registered. It will not be updated silently if the PR changes.
-The current workflow already prevents edits after approval; a future correction
-workflow would need explicit permissions and an audit trail.
+Invoice totals received by the PR backend are validated as Python `Decimal`
+values. They are serialized to JSON numbers to match the Java contract. The
+current model has no currency field, so neither the contract nor the PR
+frontend adds a currency symbol.
 
-The relationship is one-to-many: every invoice refers to one approved PR, while
-a PR can have any number of invoices. The prototype will not enforce a single
-invoice per PR.
+## Creating an Invoice
 
-## Integration contracts and state flow
+The implemented creation flow is:
 
-All integration endpoints will require an `X-Integration-Key` header. The key
-will come from an `INTEGRATION_API_KEY` environment variable shared by the two
-backends. It will never be sent to either frontend or included in a Vite
-environment variable.
+1. When the Invoice form opens, the Invoice frontend calls
+   `GET /invoice/purchase-request-options` on the Invoice backend using the
+   user's Invoice App session.
+2. The Invoice backend calls
+   `GET /integration/purchase-requests/invoice-options` on the PR backend.
+   This internal endpoint returns only approved PRs.
+3. The user selects an option displayed by PR code and request name. The
+   supplier is populated from that option and is read-only in the form.
+4. On submission, the Invoice backend does not trust the submitted supplier.
+   It calls
+   `GET /integration/purchase-requests/{request_code}/invoice-context` to
+   validate the selected PR again.
+5. Only after successful validation does the Invoice backend save the
+   confirmed code, supplier snapshot, and `purchase_request_validated_at`.
 
-### PR integration endpoints
+The second lookup prevents a stale options list from authorizing a missing or
+no-longer-approved request. Validation happens before the repository save. If
+validation fails, no Invoice is persisted. The same rules protect changing an
+existing Invoice to a different PR; keeping an already validated unchanged
+relationship does not trigger an unnecessary lookup.
 
-`GET /integration/purchase-requests/invoice-options`
+## Displaying Invoices in the PR App
 
-Returns only approved PRs for the Invoice application selection list. Each item
-contains:
+The PR frontend loads Invoice information as a separate section of the PR
+details modal:
 
-```json
-{
-  "request_code": "PR-1",
-  "request_name": "First test request",
-  "supplier_name": "Acme Ltd"
-}
+1. It calls `GET /purchase-request/{request_code}/invoices` on the PR backend
+   with the normal PR App user session.
+2. The PR backend first checks that the PR exists, then calls
+   `GET /integration/invoices?purchase_request_number=PR-1` on the Invoice
+   backend.
+3. The Invoice backend returns only rows whose
+   `purchase_request_number` matches and whose
+   `purchase_request_validated_at` is not null.
+
+This filter deliberately excludes legacy free-text relationships: an old
+matching string is not presented as a confirmed integration link. The PR App
+does not store a copy of Invoice or payment data.
+
+The frontend section has independent loading, empty, list, and error states.
+It cancels obsolete requests and guards against late responses when the modal
+closes or another PR is selected. An Invoice integration failure affects only
+this section; the PR data and its existing actions remain available.
+
+## Authentication and configuration
+
+The applications use two directional integration keys:
+
+- `PR_INTEGRATION_API_KEY` protects the internal PR endpoints called by the
+  Invoice backend;
+- `INVOICE_INTEGRATION_API_KEY` protects the internal Invoice endpoint called
+  by the PR backend.
+
+The PR backend locates the Invoice backend through `INVOICE_APP_URL`. The
+Invoice backend uses `PR_API_BASE_URL` for the PR backend. Each internal call
+sends the appropriate key in `X-Integration-Key`.
+
+These keys are used only between backends. They are not exposed through Vite
+configuration, frontend responses, or browser requests, and an integration key
+does not authorize a user-facing endpoint. User access continues to use the
+applications' separate opaque-cookie sessions (`pr_token` and
+`invoice_token`). Logging in to one application does not create a session in
+the other.
+
+Development key defaults exist only in `docker-compose.yml` to keep local
+startup simple. Production code has no fallback integration credentials and
+fails closed when a required key is absent. A production deployment should
+inject distinct values from a normal secret-management system and support
+controlled rotation rather than use the Compose defaults.
+
+## Failure handling
+
+Both integration clients use a one-second connect timeout and a two-second
+read/response timeout. A request has at most two attempts: the initial call and
+one immediate retry without backoff. Retries are limited to timeouts, network
+errors, and HTTP `502`, `503`, or `504`. Business responses and invalid
+contracts are not retried.
+
+The user-facing outcomes are:
+
+- a missing PR returns `404` during Invoice validation;
+- a PR that is not approved returns `409`;
+- an unavailable or unconfigured upstream dependency returns `503`;
+- a malformed or otherwise invalid upstream response returns `502`.
+
+Controlled error messages do not include integration keys, upstream response
+bodies, backend URLs, exception causes, or stack traces.
+
+The two flows intentionally use different availability policies. Invoice
+creation is fail-closed because persisting an unverified relationship would
+corrupt business data. PR viewing uses graceful degradation because Invoice
+information is supplementary: the PR remains visible when the Invoice App is
+unavailable.
+
+## Synchronous client in the PR App
+
+The PR App already uses synchronous SQLAlchemy `Session` objects. Its Invoice
+summary endpoint is therefore a normal synchronous FastAPI path operation
+(`def`) and uses the blocking `httpx.Client`. FastAPI executes synchronous path
+operations in a thread pool, so this HTTP call does not block the main event
+loop. This keeps the implementation consistent with the existing data-access
+style and is adequate for a small prototype.
+
+This does not make blocking I/O unbounded or indefinitely scalable: a slow
+upstream call still occupies a worker thread until it completes or times out.
+If concurrency requirements grow, the coherent change is to adopt
+`httpx.AsyncClient` together with SQLAlchemy `AsyncSession`. Converting only
+the HTTP client would introduce a mixed execution model without meaningful
+benefit at the current scale.
+
+## Testing and CI
+
+The implemented automated checks are:
+
+- 37 PR backend pytest tests;
+- 69 Invoice backend Maven/JUnit tests;
+- production builds for both React frontends.
+
+The backend integration tests use dependency overrides, mocks,
+`httpx.MockTransport`, Spring `MockRestServiceServer`, SQLite, and H2. They do
+not require PostgreSQL or a running neighbouring service.
+
+The tests cover the main integration risks:
+
+- only approved PRs are offered for Invoice selection;
+- the selected PR is checked again before an Invoice is saved;
+- a submitted supplier cannot replace the validated supplier;
+- validation failure does not save or partially mutate an Invoice;
+- multiple validated Invoices can link to one PR;
+- internal endpoints reject missing, incorrect, or unconfigured keys;
+- legacy relationships without `purchase_request_validated_at` are excluded;
+- an Invoice outage does not break the main PR list or details;
+- malformed upstream JSON and contract violations are rejected;
+- retries happen only for the allowed network and status failures.
+
+GitHub Actions defines four independent jobs for the PR backend, Invoice
+backend, PR frontend, and Invoice frontend. It runs for pull requests and
+pushes to `master`, and through manual dispatch. The jobs use locked dependency
+installation where lock files exist and do not start Docker Compose or external
+services. No coverage percentage is claimed because coverage is not measured.
+
+The complete user flow and degraded PR view have also been checked manually
+with Docker Compose.
+
+## Development approach and AI assistance
+
+The architecture, scope, integration contracts, and acceptance criteria were defined and reviewed by the candidate. The Python integration code and its tests were written manually by the candidate, with AI used as a discussion and code-review aid.
+
+An AI coding agent was used primarily to assist with the Java and React parts, which are outside the candidate's primary Python backend stack. These changes were introduced through narrowly scoped tasks and were reviewed through diffs, automated tests, production builds, and manual end-to-end checks before acceptance. The CI workflow was also inspected, corrected, and verified by the candidate after it was introduced.
+
+AI assistance did not replace validation of the result: architectural decisions, integration behaviour, failure scenarios, final review, and responsibility for the submitted solution remained with the candidate.
+
+## Running and demonstrating the prototype
+
+Start the complete local environment from the repository root:
+
+```bash
+docker compose up --build
 ```
 
-`GET /integration/purchase-requests/{request_code}/invoice-context`
+The PR App is available at `http://localhost:5173` and the Invoice App at
+`http://localhost:5174`.
 
-Validates one PR immediately before invoice creation. A successful response
-contains the confirmed PR code and supplier snapshot:
+A concise demonstration is:
 
-```json
-{
-  "request_code": "PR-1",
-  "supplier_name": "Acme Ltd"
-}
-```
-
-The endpoint returns `404 Not Found` when the PR does not exist and `409
-Conflict` when it exists but is not approved.
-
-### Invoice integration endpoint
-
-`GET /integration/invoices?purchase_request_number=PR-1`
-
-Returns invoice summaries for a PR:
-
-```json
-[
-  {
-    "id": 12,
-    "invoice_number": "INV-2026-0512",
-    "invoice_sum": 1000.00,
-    "invoice_sum_paid": 0.00,
-    "invoice_status": "created"
-  }
-]
-```
-
-The normal user-facing Invoice API will accept the selected PR code, invoice
-fields, and optional attachment. It will not trust a supplier value from the
-client. The supplier stored on the invoice will come from the successful PR
-validation response.
-
-The PR frontend will request linked invoices through its own backend. This will
-be a separate request from loading the PR itself, allowing the main PR details
-to remain available when the Invoice application is down.
-
-## Failure and ambiguity handling
-
-Invoice creation uses a fail-closed policy. If the PR backend cannot confirm
-that a request exists and is approved, no invoice is saved.
-
-- Missing PR: return `404` with a specific user-facing message.
-- Existing but unapproved PR: return `409` with a specific message.
-- Network error, timeout, or exhausted retry: return `503 Service Unavailable`.
-- Invoice backend unavailable while viewing a PR: keep the PR visible and show
-  that invoice information is temporarily unavailable.
-
-Calls will use an approximately one-second connection timeout and a two-second
-response timeout. Read-only integration requests may be retried once for a
-network error, timeout, or `502`, `503`, or `504` response. They will not be
-retried for `404` or `409`, because those responses describe a valid business
-result. Only `GET` requests are retried, so the retry cannot create duplicate
-records.
-
-The approved-PR list is a user-interface aid, not an authorization or
-validation boundary. The Invoice backend always performs the single-PR check
-again during creation.
-
-The prototype allows multiple invoices for the same PR. It does not attempt to
-identify duplicate supplier invoices because the required uniqueness rule is
-not specified. Invoice-number uniqueness may be scoped by supplier in a future
-version after confirming the business rule.
-
-## Testing and validation
-
-The planned automated tests focus on failures that could create an invalid
-cross-service relationship:
-
-- an invoice cannot be created for a missing PR;
-- an invoice cannot be created for an unapproved PR;
-- the supplier returned by the PR backend is stored instead of an untrusted
-  client value;
-- an upstream timeout or error does not save an invoice;
-- multiple invoices can be linked to one PR;
-- integration endpoints reject a missing or incorrect service key;
-- failure to load invoices does not prevent the PR itself from being viewed.
-
-HTTP dependencies will be stubbed in backend tests so that success, business
-errors, timeouts, and temporary upstream errors are deterministic. A manual
-Docker Compose scenario will verify the complete user flow:
-
-1. Create and approve a PR.
-2. Select it in the Invoice application and confirm that the supplier is filled
+1. Sign in to the PR App as an employee and create a PR.
+2. Send the PR for approval.
+3. Sign in as a finance user and approve it.
+4. Open the Invoice App with a finance session.
+5. Select the approved PR and verify that its supplier is filled
    automatically.
-3. Register two invoices for the PR.
-4. Open the PR and confirm that both invoices are visible.
-5. Stop one backend and verify the relevant error or degraded view.
+6. Create two Invoices for that PR.
+7. Return to the PR App and open the PR details.
+8. Confirm that both Invoices and their payment states are shown.
+9. Stop the Invoice backend and reopen the PR.
+10. Confirm that the PR remains usable while its Invoice section reports that
+    Invoice information is temporarily unavailable.
 
-This section will be updated with the actual test commands and results after
-the prototype is implemented.
+## Trade-offs and intentional omissions
 
-## Trade-offs and alternatives
+Synchronous HTTP was chosen for a small and understandable prototype. It keeps
+data current at validation time, but each cross-service feature depends on the
+neighbouring service being available. The single immediate retry handles a
+brief transient failure but has no backoff or jitter.
 
-### Synchronous HTTP
+The shared PostgreSQL deployment was retained, while application integration
+still goes through HTTP rather than foreign tables. Schema ownership remains
+insufficiently strict: the PR App creates its schema through SQLAlchemy and the
+Invoice App uses Hibernate `ddl-auto: update`.
+`purchase_request_validated_at` was added without a full migration tool. These
+choices are acceptable for the prototype but not a safe production migration
+strategy.
 
-Synchronous HTTP keeps the prototype small and provides current PR data at the
-moment an invoice is created. Its main cost is a runtime dependency: Invoice
-creation is temporarily unavailable when the PR backend is unavailable. This
-is acceptable for the prototype because correctness is more important than
-accepting an invoice that cannot be validated.
+Other intentional limitations are:
 
-### Direct access through the shared database
-
-The Invoice backend could query the PR tables or use a foreign key because both
-applications currently share PostgreSQL. This would require less HTTP code, but
-it would couple both services to the same schema and bypass PR business rules.
-It was rejected because the database layout is an implementation detail rather
-than a stable service contract.
-
-### Asynchronous events
-
-Publishing PR approval events would let the Invoice application validate
-against a local projection when the PR backend is unavailable. A reliable
-version requires a message broker, transactional outbox, idempotent consumer,
-retries, dead-letter handling, and a way to rebuild or backfill the projection.
-That is useful when independent availability becomes a confirmed requirement,
-but it adds more complexity than the current prototype needs.
-
-## Prototype scope
-
-The prototype will include:
-
-- backend-to-backend authentication with a shared integration key;
-- listing approved PRs in the Invoice workflow;
-- server-side validation before invoice creation;
-- automatic supplier transfer from PR to Invoice;
-- a one-to-many relationship between a PR and its invoices;
-- invoice summaries in the PR details workflow;
-- focused automated tests and a documented demonstration scenario.
-
-The prototype intentionally leaves out:
-
-- a unified frontend and single sign-on;
-- requested amount and amount-delta checks;
-- supplier master data;
-- duplicate-invoice detection;
-- notifications and audit history;
-- ERP and Purchase Order integration;
-- asynchronous messaging and local projections.
-
-The repository will continue to run through `docker compose up --build`. Exact
-review steps and test commands will be added after implementation.
+- the supplier is a point-in-time snapshot and is not reconciled later;
+- user sessions are independent between applications;
+- frontend tests were not added because the repository had no frontend test
+  infrastructure;
+- there is no distributed tracing, metrics, correlation ID propagation, or
+  circuit breaker;
+- there is no requested amount, currency, supplier master data, duplicate
+  Invoice rule, Purchase Order model, ERP integration, notification, or audit
+  history;
+- there is no unified user interface or single sign-on.
 
 ## Roadmap
 
-### Near-term hardening
+### Near-term production hardening
 
-1. Replace automatic schema creation with explicit, versioned migrations and
-   make table ownership clear for each service.
-2. Add CI for backend tests and contract checks.
-3. Add structured integration logs, request correlation IDs, latency/error
-   metrics, and alerts for repeated upstream failures.
-4. Define invoice uniqueness and idempotency rules with finance, then enforce
-   them in the API and database.
-5. Replace the static integration key with OAuth2 Client Credentials using
-   short-lived tokens and secret rotation.
+1. Introduce Alembic and Flyway, or otherwise establish explicit migration and
+   schema ownership for each service.
+2. Move both directional keys to a secret manager with rotation, then replace
+   static shared keys with OAuth2 Client Credentials or mTLS where warranted.
+3. Add structured logs, metrics, traces, and correlation IDs across service
+   calls.
+4. Add retry backoff and jitter, a circuit breaker, and operational alerts.
+5. Add contract/OpenAPI tests and frontend test infrastructure.
+6. Resolve dependency audit findings and existing deprecation warnings.
+7. Enforce expiry, rotation, and revocation for user session tokens and use
+   production cookie settings.
+8. Measure thread-pool limits and service behaviour under load before choosing
+   an async migration.
 
-### Higher availability through events
+### Architectural evolution
 
-If invoice registration must continue while the PR backend is unavailable, the
-PR application can publish versioned `purchase_request.approved` events through
-RabbitMQ. The approval change and an outbox record should be written in the
-same database transaction. A separate publisher sends unsent outbox records,
-and the Invoice application consumes them into a local approved-PR projection.
-Consumers must be idempotent by event ID, and failed messages need retry and
-dead-letter handling. Existing approved PRs also need a backfill or replay
-mechanism. Redis is not required for this flow.
+If real availability, scale, or audit requirements justify it, synchronous
+lookups can evolve to events through RabbitMQ or another broker. A reliable
+design would need a transactional outbox, idempotent consumers, a local Invoice
+read projection in the PR App, explicit eventual-consistency rules, and a
+reconciliation process. These mechanisms should answer measured requirements,
+not be added only to introduce more technology.
 
-### Broader product capabilities
+### Product capabilities
 
-1. Add a requested amount to the PR domain and show requested, invoiced, paid,
-   and remaining amounts without treating them as the same value.
-2. Introduce supplier master data with bank details, tax identifiers, and
-   payment terms.
-3. Add a unified navigation experience and single sign-on while retaining
-   backend service boundaries.
-4. Add correction workflows, notifications, and an audit trail.
-5. Integrate Purchase Orders from the future ERP and report differences between
-   requested, ordered, invoiced, and paid amounts.
+1. Add a structured requested amount and currency to PRs, then implement
+   requested/invoiced/paid reconciliation and show remaining amounts.
+2. Add Purchase Orders, supplier master data, and ERP integration.
+3. Add a unified interface and shared user authentication.
+4. Improve search and make PRs with similar or identical names easier to
+   distinguish.
+
+The PR code is already the unique identifier used by the integration. Making
+`request_name` unique, or enforcing a naming policy, would be a separate
+product and UX decision rather than an established requirement.
