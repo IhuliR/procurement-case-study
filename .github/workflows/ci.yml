@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pr-backend:
+    name: PR backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pr-app/back
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: pr-app/back/uv.lock
+      - name: Install dependencies
+        run: uv sync --frozen --group dev
+      - name: Run tests
+        run: uv run pytest -q
+
+  invoice-backend:
+    name: Invoice backend tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: invoice-app/back
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: invoice-app/back/pom.xml
+      - name: Run tests
+        run: mvn test
+
+  pr-frontend:
+    name: PR frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pr-app/front
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: pr-app/front/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+
+  invoice-frontend:
+    name: Invoice frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: invoice-app/front
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: invoice-app/front/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
