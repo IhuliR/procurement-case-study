@@ -173,3 +173,18 @@ def test_purchase_request_list_does_not_depend_on_invoice_app(
     assert response.status_code == 200
     assert len(response.json()) == 1
     invoice_client.get_invoices.assert_not_called()
+
+
+def test_openapi_describes_related_invoices_endpoint(
+    client: TestClient,
+) -> None:
+    response = client.get("/openapi.json")
+
+    assert response.status_code == 200
+
+    schema = response.json()["paths"][
+        "/purchase-request/{request_code}/invoices"
+    ]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+
+    assert schema["type"] == "array"
+    assert schema["items"]["$ref"] == "#/components/schemas/InvoiceSummary"
