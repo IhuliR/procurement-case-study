@@ -147,7 +147,7 @@ def export_pdf(
 
 @router.get(
     "/{request_code}/invoices",
-    response_description=list[InvoiceSummary]
+    response_model=list[InvoiceSummary],
 )
 def list_pr_invoices(
     request_code: str,

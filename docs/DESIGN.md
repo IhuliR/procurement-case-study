@@ -32,7 +32,7 @@ The following describes the repository at the start of the integration work:
   prototype;
 - automated tests were sparse and CI was absent;
 - the integration was required to avoid additional coupling through direct
-queries to the neighbouring application's tables.
+  queries to the neighbouring application's tables.
 
 ## Implemented prototype
 
@@ -198,7 +198,7 @@ benefit at the current scale.
 
 The implemented automated checks are:
 
-- 37 PR backend pytest tests;
+- 38 PR backend pytest tests;
 - 69 Invoice backend Maven/JUnit tests;
 - production builds for both React frontends.
 
