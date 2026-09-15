@@ -7,9 +7,17 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..db import get_db
+from ..integrations.invoice import (
+    InvoiceClient,
+    InvoiceIntegrationNotConfiguredError,
+    InvoiceInvalidResponseError,
+    InvoiceUnavailableError,
+    get_invoice_client,
+)
 from ..models import PurchaseRequest, User
 from ..pdf import render_pr_pdf
 from ..schemas import (
+    InvoiceSummary,
     PRStatus,
     PurchaseRequestCreate,
     PurchaseRequestOut,
@@ -135,3 +143,40 @@ def export_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{pr.request_code}.pdf"'},
     )
+
+
+@router.get(
+    "/{request_code}/invoices",
+    response_description=list[InvoiceSummary]
+)
+def list_pr_invoices(
+    request_code: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(current_user),
+    invoice_client: InvoiceClient = Depends(get_invoice_client),
+) -> list[InvoiceSummary]:
+    pr = (
+        db.query(PurchaseRequest)
+        .filter(PurchaseRequest.request_code == request_code)
+        .one_or_none()
+    )
+    if not pr:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Purchase request not found",
+        )
+    try:
+        return invoice_client.get_invoices(pr.request_code)
+    except (
+        InvoiceUnavailableError,
+        InvoiceIntegrationNotConfiguredError,
+    ) as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from None
+    except InvoiceInvalidResponseError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(error)
+        ) from None

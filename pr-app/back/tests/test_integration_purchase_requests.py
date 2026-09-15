@@ -2,7 +2,6 @@
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from fastapi.testclient import TestClient
 
 from app.models import PurchaseRequest
 

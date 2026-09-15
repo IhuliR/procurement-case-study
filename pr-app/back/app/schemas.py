@@ -1,13 +1,26 @@
 """Pydantic request/response models."""
 from __future__ import annotations
 
+from decimal import Decimal
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StringConstraints,
+    field_serializer,
+)
+
 
 Role = Literal["employee", "finance"]
 PRStatus = Literal["initiated", "sent for approval", "approved", "rejected"]
+NonBlankString = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+]
 
 
 class LoginIn(BaseModel):
@@ -78,3 +91,21 @@ class PurchaseRequestInvoiceContext(BaseModel):
 
     request_code: str
     supplier_name: str
+
+
+class InvoiceSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int = Field(gt=0)
+    invoice_number: NonBlankString
+    invoice_sum: Decimal = Field(ge=0)
+    invoice_sum_paid: Decimal = Field(ge=0)
+    invoice_status: NonBlankString
+
+    @field_serializer(
+        "invoice_sum",
+        "invoice_sum_paid",
+        when_used="json",
+    )
+    def serialize_decimal(self, value: Decimal) -> float:
+        return float(value)
