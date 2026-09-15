@@ -39,6 +39,9 @@ purchase-request:
   connect-timeout: ${PR_CONNECT_TIMEOUT:1s}
   response-timeout: ${PR_RESPONSE_TIMEOUT:2s}
 
+invoice-integration:
+  api-key: ${INVOICE_INTEGRATION_API_KEY:}
+
 # SpringDoc OpenAPI / Swagger UI paths. Defaults are already these, but
 # pinning them here makes the URL discoverable without leaving this file.
 springdoc:

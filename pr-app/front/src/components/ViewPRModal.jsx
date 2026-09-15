@@ -1,14 +1,17 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
+  Badge,
   Button,
+  Card,
   Divider,
   Group,
+  Loader,
   Modal,
   SimpleGrid,
   Stack,
   Text,
 } from '@mantine/core';
-import { api } from '../api.js';
+import { api, getPurchaseRequestInvoices } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import StatusBadge from './StatusBadge.jsx';
 
@@ -23,12 +26,96 @@ const FieldRow = ({ label, value }) => (
   </Stack>
 );
 
+const formatAmount = (value) => {
+  if (value === null || value === undefined || value === '') return '—';
+
+  const amount = Number(value);
+  return Number.isFinite(amount)
+    ? new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(amount)
+    : '—';
+};
+
 export default function ViewPRModal({ pr, onClose, onUpdated }) {
   const { user } = useAuth();
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState(null);
+  const [invoiceState, setInvoiceState] = useState({
+    status: 'idle',
+    items: [],
+    message: null,
+    requestCode: null,
+  });
+
+  useEffect(() => {
+    if (!pr?.request_code) {
+      setInvoiceState({
+        status: 'idle',
+        items: [],
+        message: null,
+        requestCode: null,
+      });
+      return undefined;
+    }
+
+    let active = true;
+    const controller = new AbortController();
+    const requestCode = pr.request_code;
+
+    setInvoiceState({
+      status: 'loading',
+      items: [],
+      message: null,
+      requestCode,
+    });
+    getPurchaseRequestInvoices(requestCode, { signal: controller.signal })
+      .then((response) => {
+        if (!active) return;
+
+        if (!Array.isArray(response.data)) {
+          setInvoiceState({
+            status: 'error',
+            items: [],
+            message: 'Could not load invoice information',
+            requestCode,
+          });
+          return;
+        }
+
+        setInvoiceState({
+          status: 'success',
+          items: response.data,
+          message: null,
+          requestCode,
+        });
+      })
+      .catch((invoiceError) => {
+        if (!active || controller.signal.aborted) return;
+
+        const isTemporarilyUnavailable = [502, 503].includes(
+          invoiceError?.response?.status
+        );
+        setInvoiceState({
+          status: 'error',
+          items: [],
+          message: isTemporarilyUnavailable
+            ? 'Invoice information is temporarily unavailable'
+            : 'Could not load invoice information',
+          requestCode,
+        });
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [pr?.request_code]);
 
   if (!pr) return null;
+
+  const invoiceStatus =
+    invoiceState.requestCode === pr.request_code
+      ? invoiceState.status
+      : 'loading';
 
   // --- Role-aware action gating ---
   // Only the request author can send "initiated" → "sent for approval".
@@ -103,6 +190,63 @@ export default function ViewPRModal({ pr, onClose, onUpdated }) {
           <FieldRow label="Supplier email" value={pr.supplier_email} />
         </SimpleGrid>
         <FieldRow label="Request details" value={pr.request_details} />
+
+        <Divider />
+
+        <Stack gap="sm">
+          <Text fw={600}>Related invoices</Text>
+
+          {invoiceStatus === 'loading' && (
+            <Group gap="xs">
+              <Loader size="xs" />
+              <Text size="sm" c="dimmed">
+                Loading invoices...
+              </Text>
+            </Group>
+          )}
+
+          {invoiceStatus === 'success' &&
+            invoiceState.items.length === 0 && (
+              <Text size="sm" c="dimmed">
+                No related invoices
+              </Text>
+            )}
+
+          {invoiceStatus === 'error' && (
+            <Text size="sm" c="red">
+              {invoiceState.message}
+            </Text>
+          )}
+
+          {invoiceStatus === 'success' &&
+            invoiceState.items.map((invoice) => (
+              <Card key={invoice.id} withBorder padding="sm" radius="md">
+                <Group justify="space-between" align="flex-start" wrap="nowrap">
+                  <Stack gap={2}>
+                    <Text size="xs" fw={500} c="dimmed">
+                      Invoice number
+                    </Text>
+                    <Text size="sm" fw={500}>
+                      {invoice.invoice_number}
+                    </Text>
+                  </Stack>
+                  <Badge color="gray" variant="light" radius="xl">
+                    {invoice.invoice_status}
+                  </Badge>
+                </Group>
+                <SimpleGrid cols={2} spacing="sm" mt="sm">
+                  <FieldRow
+                    label="Invoice sum"
+                    value={formatAmount(invoice.invoice_sum)}
+                  />
+                  <FieldRow
+                    label="Paid sum"
+                    value={formatAmount(invoice.invoice_sum_paid)}
+                  />
+                </SimpleGrid>
+              </Card>
+            ))}
+        </Stack>
 
         {note && (
           <Stack bg="gray.0" p="sm" gap={2} style={{ borderRadius: 4 }}>
